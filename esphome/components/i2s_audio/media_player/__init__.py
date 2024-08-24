@@ -6,6 +6,12 @@ from esphome import pins
 
 from esphome.const import CONF_ID, CONF_MODE
 
+from esphome.components.sd_card import (
+    sd_card_id_schema,
+    CONF_SD_CARD_ID,
+    register_sd_card_device
+)
+
 from .. import (
     i2s_audio_ns,
     I2SAudioComponent,
@@ -16,13 +22,13 @@ from .. import (
 
 CODEOWNERS = ["@jesserockz"]
 DEPENDENCIES = ["i2s_audio"]
+AUTO_LOAD = ["sd_card"]
 
 I2SAudioMediaPlayer = i2s_audio_ns.class_(
     "I2SAudioMediaPlayer", cg.Component, media_player.MediaPlayer, I2SAudioOut
 )
 
 i2s_dac_mode_t = cg.global_ns.enum("i2s_dac_mode_t")
-
 
 CONF_MUTE_PIN = "mute_pin"
 CONF_AUDIO_ID = "audio_id"
@@ -50,7 +56,6 @@ def validate_esp32_variant(config):
         raise cv.Invalid(f"{variant} does not have an internal DAC")
     return config
 
-
 CONFIG_SCHEMA = cv.All(
     cv.typed_schema(
         {
@@ -59,6 +64,7 @@ CONFIG_SCHEMA = cv.All(
                     cv.GenerateID(): cv.declare_id(I2SAudioMediaPlayer),
                     cv.GenerateID(CONF_I2S_AUDIO_ID): cv.use_id(I2SAudioComponent),
                     cv.Required(CONF_MODE): cv.enum(INTERNAL_DAC_OPTIONS, lower=True),
+                    cv.Optional(CONF_SD_CARD_ID): sd_card_id_schema,
                 }
             ).extend(cv.COMPONENT_SCHEMA),
             "external": media_player.MEDIA_PLAYER_SCHEMA.extend(
@@ -75,6 +81,7 @@ CONFIG_SCHEMA = cv.All(
                     cv.Optional(CONF_I2S_COMM_FMT, default="msb"): cv.one_of(
                         *I2C_COMM_FMT_OPTIONS, lower=True
                     ),
+                    cv.Optional(CONF_SD_CARD_ID): sd_card_id_schema,
                 }
             ).extend(cv.COMPONENT_SCHEMA),
         },
@@ -101,6 +108,9 @@ async def to_code(config):
             cg.add(var.set_mute_pin(pin))
         cg.add(var.set_external_dac_channels(2 if config[CONF_MODE] == "stereo" else 1))
         cg.add(var.set_i2s_comm_fmt_lsb(config[CONF_I2S_COMM_FMT] == "lsb"))
+
+    if CONF_SD_CARD_ID in config:
+        await register_sd_card_device(var, config)
 
     # Add library dependencies:
     # ESP32-audioI2S
