@@ -6,10 +6,11 @@
 
 #include <driver/i2s.h>
 
-#include "esphome/components/media_player/media_player.h"
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/helpers.h"
+#include "esphome/components/media_player/media_player.h"
+#include "esphome/components/sd_card/sd_card.h"
 
 #include <Audio.h>
 
@@ -23,7 +24,10 @@ enum I2SState : uint8_t {
   I2S_STATE_STOPPING,
 };
 
-class I2SAudioMediaPlayer : public Component, public media_player::MediaPlayer, public I2SAudioOut {
+class I2SAudioMediaPlayer : public Component,
+                            public media_player::MediaPlayer,
+                            public I2SAudioOut,
+                            public sd_card::SDCardDevice {
  public:
   void setup() override;
   float get_setup_priority() const override { return esphome::setup_priority::LATE; }

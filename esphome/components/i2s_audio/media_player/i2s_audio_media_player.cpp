@@ -277,13 +277,20 @@ bool I2SAudioMediaPlayer::connecttouri_(const std::string uri) {
   // local file?
   if (uri.find("file://", 0) == 0) {
     // format: file://<path>
+    if (this->sd_card_parent_ == nullptr) {
+      ESP_LOGW(TAG, "SD Card not configured");
+      return false;
+    }
 
-    // TODO: add support for local file playback
+    if (!this->sd_card_parent_->is_mounted()) {
+      ESP_LOGW(TAG, "SD card not mounted");
+      return false;
+    }
 
-    // const std::string path = uri.substr(7);
-    // ESP_LOGD(TAG, "ConnectTo File '%s'", path.c_str());
-    // return this->audio_->connecttoFS(FS, uri.c_str() + 7);
-    return false;
+    const std::string path = uri.substr(7);
+
+    ESP_LOGD(TAG, "ConnectTo File '%s'", path.c_str());
+    return this->audio_->connecttoFS(*this->sd_card_parent_->get_fs(), uri.c_str() + 7);
   }
 
   // text to speech?

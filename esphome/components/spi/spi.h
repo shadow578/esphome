@@ -333,6 +333,8 @@ class SPIComponent : public Component {
   void setup() override;
   void dump_config() override;
 
+  SPIInterface get_interface() { return this->interface_; }
+
  protected:
   GPIOPin *clk_pin_{nullptr};
   GPIOPin *sdi_pin_{nullptr};
