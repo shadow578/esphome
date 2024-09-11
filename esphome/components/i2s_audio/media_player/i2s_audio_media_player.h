@@ -81,6 +81,45 @@ class I2SAudioMediaPlayer : public Component, public Parented<I2SAudioComponent>
 
   optional<std::string> current_url_{};
   bool is_announcement_{false};
+
+ private:
+  enum class audio_task_command : uint8_t {
+    NONE,
+    PLAY,
+    STOP,
+    PAUSE_RESUME,
+    SET_VOLUME,
+    PLAY_STATE_CHANGE,
+  };
+
+  struct audio_message {
+    audio_task_command command;
+    union {
+      const std::string *uri;  // PLAY request
+      bool is_running;         // PLAY, STOP, PAUSE_RESUME and PLAY_STATE_CHANGE response
+      float volume;            // SET_VOLUME request
+    };
+  };
+
+  TaskHandle_t audio_task_handle_;
+  QueueHandle_t audio_request_queue_;
+  QueueHandle_t audio_response_queue_;
+
+  bool audio_is_running_;
+
+  void create_audio_task_();
+
+  void send_request_(const audio_message &message, const bool wait = false);
+
+  void audio_pause_resume_(const bool wait = false);
+
+  void audio_set_volume_(const float volume);
+
+  audio_task_command process_response_queue_();
+
+  static void audio_task_(void *pvParam);
+
+  bool connecttouri_impl_(const std::string &uri);
 };
 
 }  // namespace i2s_audio

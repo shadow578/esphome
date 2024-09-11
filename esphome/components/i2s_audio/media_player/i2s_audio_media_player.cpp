@@ -18,8 +18,9 @@ void I2SAudioMediaPlayer::control(const media_player::MediaPlayerCall &call) {
   if (call.get_media_url().has_value()) {
     this->current_url_ = call.get_media_url();
     if (this->i2s_state_ != I2S_STATE_STOPPED && this->audio_ != nullptr) {
-      if (this->audio_->isRunning()) {
-        this->audio_->stopSong();
+      if (this->audio_is_running_) {
+        audio_message m = {.command = audio_task_command::STOP};
+        this->send_request_(m);
       }
       if (this->connecttouri_(this->current_url_.value())) {
         this->state = play_state;
@@ -73,21 +74,21 @@ void I2SAudioMediaPlayer::control(const media_player::MediaPlayerCall &call) {
     }
     switch (call.get_command().value()) {
       case media_player::MEDIA_PLAYER_COMMAND_PLAY:
-        if (!this->audio_->isRunning())
-          this->audio_->pauseResume();
+        if (!this->audio_is_running_)
+          this->audio_pause_resume_();
         this->state = play_state;
         break;
       case media_player::MEDIA_PLAYER_COMMAND_PAUSE:
-        if (this->audio_->isRunning())
-          this->audio_->pauseResume();
+        if (this->audio_is_running_)
+          this->audio_pause_resume_();
         this->state = media_player::MEDIA_PLAYER_STATE_PAUSED;
         break;
       case media_player::MEDIA_PLAYER_COMMAND_STOP:
         this->stop();
         break;
       case media_player::MEDIA_PLAYER_COMMAND_TOGGLE:
-        this->audio_->pauseResume();
-        if (this->audio_->isRunning()) {
+        this->audio_pause_resume_(true);
+        if (this->audio_is_running_) {
           this->state = media_player::MEDIA_PLAYER_STATE_PLAYING;
         } else {
           this->state = media_player::MEDIA_PLAYER_STATE_PAUSED;
@@ -117,8 +118,7 @@ void I2SAudioMediaPlayer::unmute_() {
   this->muted_ = false;
 }
 void I2SAudioMediaPlayer::set_volume_(float volume, bool publish) {
-  if (this->audio_ != nullptr)
-    this->audio_->setVolume(remap<uint8_t, float>(volume, 0.0f, 1.0f, 0, this->audio_->maxVolume()));
+  this->audio_set_volume_(volume);
   if (publish)
     this->volume = volume;
 }
@@ -142,13 +142,14 @@ void I2SAudioMediaPlayer::loop() {
     case I2S_STATE_STOPPED:
       break;
   }
+
+  this->process_response_queue_();
 }
 
 void I2SAudioMediaPlayer::play_() {
-  this->audio_->loop();
   if ((this->state == media_player::MEDIA_PLAYER_STATE_PLAYING ||
        this->state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING) &&
-      !this->audio_->isRunning()) {
+      !this->audio_is_running_) {
     this->stop();
   }
 }
@@ -183,7 +184,7 @@ void I2SAudioMediaPlayer::start_() {
   this->i2s_state_ = I2S_STATE_RUNNING;
   this->high_freq_.start();
   this->audio_->setVolumeSteps(255);  // use 255 steps for smoother volume control
-  this->audio_->setVolume(remap<uint8_t, float>(this->volume, 0.0f, 1.0f, 0, this->audio_->maxVolume()));
+  this->audio_set_volume_(volume);
   if (this->current_url_.has_value()) {
     if (this->connecttouri_(this->current_url_.value())) {
       if (this->is_announcement_) {
@@ -210,8 +211,9 @@ void I2SAudioMediaPlayer::stop() {
   this->i2s_state_ = I2S_STATE_STOPPING;
 }
 void I2SAudioMediaPlayer::stop_() {
-  if (this->audio_->isRunning()) {
-    this->audio_->stopSong();
+  if (this->audio_is_running_) {
+    audio_message m = {.command = audio_task_command::STOP};
+    this->send_request_(m, true);
     return;
   }
 
@@ -264,6 +266,143 @@ void I2SAudioMediaPlayer::dump_config() {
 }
 
 bool I2SAudioMediaPlayer::connecttouri_(const std::string &uri) {
+  audio_message m = {.command = audio_task_command::PLAY, .uri = &uri};
+  this->send_request_(m, true);
+  return this->audio_is_running_;
+}
+
+void I2SAudioMediaPlayer::create_audio_task_() {
+  // initialize queues for communication
+  this->audio_request_queue_ = xQueueCreate(10, sizeof(audio_message));
+  this->audio_response_queue_ = xQueueCreate(10, sizeof(audio_message));
+
+  if (!this->audio_request_queue_ || !this->audio_response_queue_) {
+    ESP_LOGE(TAG, "failed to create queues for audio task");
+    return;
+  }
+
+  // spawn the audio task
+  xTaskCreatePinnedToCore(this->audio_task_,
+                          "audio_task",               // name
+                          5000,                       // stack size
+                          this,                       // input parameter
+                          2 | portPRIVILEGE_BIT,      // priority
+                          &this->audio_task_handle_,  // handle
+                          1                           // core
+  );
+}
+
+void I2SAudioMediaPlayer::send_request_(const audio_message &message, const bool wait) {
+  if (!this->audio_request_queue_) {
+    ESP_LOGE(TAG, "attemted to send_request_ before audio_request_queue_ was initialized!");
+    return;
+  }
+
+  xQueueSend(this->audio_request_queue_, &message, portMAX_DELAY);
+
+  if (wait) {
+    while (this->process_response_queue_() != message.command) {
+      sleep(1);
+    }
+  }
+}
+
+void I2SAudioMediaPlayer::audio_pause_resume_(const bool wait) {
+  audio_message m = {.command = audio_task_command::PAUSE_RESUME};
+  this->send_request_(m, wait);
+}
+
+void I2SAudioMediaPlayer::audio_set_volume_(const float volume) {
+  audio_message m = {.command = audio_task_command::SET_VOLUME, .volume = volume};
+  this->send_request_(m);
+}
+
+I2SAudioMediaPlayer::audio_task_command I2SAudioMediaPlayer::process_response_queue_() {
+  audio_message response;
+  if (xQueueReceive(this->audio_response_queue_, &response, 1) != pdPASS) {
+    // no message in queue
+    return audio_task_command::NONE;
+  }
+
+  switch (response.command) {
+    case audio_task_command::PLAY:
+    case audio_task_command::STOP:
+    case audio_task_command::PAUSE_RESUME:
+    case audio_task_command::PLAY_STATE_CHANGE: {
+      this->audio_is_running_ = response.is_running;
+      break;
+    }
+    case audio_task_command::SET_VOLUME: {
+      // don't care
+      break;
+    }
+    default: {
+      ESP_LOGE(TAG, "process_response_queue_ received unknown command: %d", response.command);
+      break;
+    }
+  }
+
+  return response.command;
+}
+
+void I2SAudioMediaPlayer::audio_task_(void *pvParam) {
+  I2SAudioMediaPlayer *self = static_cast<I2SAudioMediaPlayer *>(pvParam);
+  static bool was_running = false;
+
+  while (self->audio_ != nullptr) {
+    audio_message request;
+    audio_message response;
+    if (xQueueReceive(self->audio_request_queue_, &request, 1) == pdPASS) {
+      response.command = request.command;
+
+      switch (request.command) {
+        case audio_task_command::PLAY: {
+          response.is_running = self->connecttouri_impl_(*request.uri);
+          break;
+        }
+        case audio_task_command::STOP: {
+          self->audio_->stopSong();
+          response.is_running = false;
+          break;
+        }
+        case audio_task_command::PAUSE_RESUME: {
+          self->audio_->pauseResume();
+          response.is_running = self->audio_->isRunning();
+          break;
+        }
+        case audio_task_command::SET_VOLUME: {
+          self->audio_->setVolume(remap<uint8_t, float>(request.volume, 0.0f, 1.0f, 0, self->audio_->maxVolume()));
+          break;
+        }
+        default: {
+          ESP_LOGE(TAG, "audio_task_ received unknown command: %d", request.command);
+          break;
+        }
+      }
+
+      xQueueSend(self->audio_response_queue_, &response, portMAX_DELAY);
+    }
+
+    self->audio_->loop();
+    const bool is_running = self->audio_->isRunning();
+    if (!is_running) {
+      sleep(1);
+    }
+
+    if (is_running != was_running) {
+      // playback state change
+      response.command = audio_task_command::PLAY_STATE_CHANGE;
+      response.is_running = is_running;
+      xQueueSend(self->audio_response_queue_, &response, portMAX_DELAY);
+    }
+
+    was_running = is_running;
+  }
+
+  ESP_LOGD(TAG, "audio_task_ shutting down");
+}
+
+bool I2SAudioMediaPlayer::connecttouri_impl_(const std::string &uri) {
   if (this->audio_ == nullptr) {
     return false;
   }
