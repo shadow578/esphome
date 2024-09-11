@@ -77,8 +77,6 @@ class I2SAudioMediaPlayer : public Component, public Parented<I2SAudioComponent>
 
   bool i2s_comm_fmt_lsb_;
 
-  HighFrequencyLoopRequester high_freq_;
-
   optional<std::string> current_url_{};
   bool is_announcement_{false};
 
@@ -90,6 +88,7 @@ class I2SAudioMediaPlayer : public Component, public Parented<I2SAudioComponent>
     PAUSE_RESUME,
     SET_VOLUME,
     PLAY_STATE_CHANGE,
+    SHUTDOWN,
   };
 
   struct audio_message {

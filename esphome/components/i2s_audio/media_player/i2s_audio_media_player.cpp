@@ -182,7 +182,6 @@ void I2SAudioMediaPlayer::start_() {
 #endif
 
   this->i2s_state_ = I2S_STATE_RUNNING;
-  this->high_freq_.start();
   this->audio_->setVolumeSteps(255);  // use 255 steps for smoother volume control
   this->audio_set_volume_(volume);
   if (this->current_url_.has_value()) {
@@ -212,7 +211,7 @@ void I2SAudioMediaPlayer::stop() {
 }
 void I2SAudioMediaPlayer::stop_() {
   if (this->audio_is_running_) {
-    audio_message m = {.command = audio_task_command::STOP};
+    audio_message m = {.command = audio_task_command::SHUTDOWN};
     this->send_request_(m, true);
     return;
   }
@@ -222,7 +221,6 @@ void I2SAudioMediaPlayer::stop_() {
   this->parent_->unlock();
   this->i2s_state_ = I2S_STATE_STOPPED;
 
-  this->high_freq_.stop();
   this->state = media_player::MEDIA_PLAYER_STATE_IDLE;
   this->publish_state();
   this->is_announcement_ = false;
@@ -355,6 +353,7 @@ void I2SAudioMediaPlayer::audio_task_(void *pvParam) {
     if (xQueueReceive(self->audio_request_queue_, &request, 1) == pdPASS) {
       response.command = request.command;
 
+      bool do_shutdown = false;
       switch (request.command) {
         case audio_task_command::PLAY: {
           response.is_running = self->connecttouri_impl_(*request.uri);
@@ -374,6 +373,9 @@ void I2SAudioMediaPlayer::audio_task_(void *pvParam) {
           self->audio_->setVolume(remap<uint8_t, float>(request.volume, 0.0f, 1.0f, 0, self->audio_->maxVolume()));
           break;
         }
+        case audio_task_command::SHUTDOWN: {
+          do_shutdown = true;
+        }
         default: {
           ESP_LOGE(TAG, "audio_task_ received unknown command: %d", request.command);
           break;
@@ -381,6 +383,10 @@ void I2SAudioMediaPlayer::audio_task_(void *pvParam) {
       }
 
       xQueueSend(self->audio_response_queue_, &response, portMAX_DELAY);
+
+      if (do_shutdown) {
+        break;
+      }
     }
 
     self->audio_->loop();
